@@ -10,34 +10,42 @@ const PORT = 3000;
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 fs.ensureDirSync(UPLOAD_DIR);
 
-// Allowed types
-const allowedTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-
-// Multer config
-const storage = multer.memoryStorage();
-
+// 5MB limit
 const upload = multer({
-    storage,
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-    fileFilter: (req, file, cb) => {
-        if (!allowedTypes.includes(file.mimetype)) {
-            return cb(new Error("Only image files are allowed (jpg, png, gif, webp)"));
-        }
-        cb(null, true);
-    }
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Serve frontend
 app.use(express.static("public"));
 
-// Upload endpoint
+// 🔒 REAL IMAGE VALIDATION (MAGIC NUMBERS)
+function isValidImage(buffer) {
+    const signatures = {
+        jpg: ["ffd8ff"],
+        png: ["89504e47"],
+        gif: ["47494638"],
+        webp: ["52494646"]
+    };
+
+    const hex = buffer.toString("hex").slice(0, 8);
+
+    return Object.values(signatures).some(sigArr =>
+        sigArr.some(sig => hex.startsWith(sig))
+    );
+}
+
 app.post("/upload", upload.single("file"), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: "No file uploaded" });
         }
 
-        // Create hash for duplicate detection
+        // 🔒 Type validation using real content
+        if (!isValidImage(req.file.buffer)) {
+            return res.status(400).json({ error: "Invalid file type. Only jpg, png, gif, webp allowed." });
+        }
+
+        // 🔒 Duplicate detection using SHA256
         const hash = crypto.createHash("sha256")
             .update(req.file.buffer)
             .digest("hex");
@@ -46,7 +54,6 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         const filename = `${hash}${ext}`;
         const filepath = path.join(UPLOAD_DIR, filename);
 
-        // If duplicate exists, don't rewrite
         if (await fs.pathExists(filepath)) {
             return res.json({ message: "Duplicate file detected. Reused existing file.", file: filename });
         }
@@ -60,7 +67,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     }
 });
 
-// Auto cleanup (older than 24h)
+// 🔒 Auto cleanup (24h)
 setInterval(async () => {
     const files = await fs.readdir(UPLOAD_DIR);
     const now = Date.now();
@@ -74,11 +81,14 @@ setInterval(async () => {
             console.log("Deleted old file:", file);
         }
     }
-}, 60 * 60 * 1000); // Check every hour
+}, 60 * 60 * 1000);
 
-// Error handler
+// 🔒 Proper error handling
 app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+            return res.status(400).json({ error: "File too large. Maximum size is 5MB." });
+        }
         return res.status(400).json({ error: err.message });
     }
     if (err) {
